@@ -35,6 +35,7 @@
 #include "core/resource.h"
 #include "mesh.h"
 #include "scene/3d/navigation_mesh.h"
+#include "servers/visual_server.h"
 #include "shape.h"
 
 class MeshLibrary : public Resource {
@@ -43,10 +44,23 @@ class MeshLibrary : public Resource {
 	RES_BASE_EXTENSION("meshlib");
 
 public:
+	enum ColorFormat {
+		COLOR_NONE = VS::MULTIMESH_COLOR_NONE,
+		COLOR_8BIT = VS::MULTIMESH_COLOR_8BIT,
+		COLOR_FLOAT = VS::MULTIMESH_COLOR_FLOAT,
+	};
+
+	enum CustomDataFormat {
+		CUSTOM_DATA_NONE = VS::MULTIMESH_CUSTOM_DATA_NONE,
+		CUSTOM_DATA_8BIT = VS::MULTIMESH_CUSTOM_DATA_8BIT,
+		CUSTOM_DATA_FLOAT = VS::MULTIMESH_CUSTOM_DATA_FLOAT
+	};
+
 	struct ShapeData {
 		Ref<Shape> shape;
 		Transform local_transform;
 	};
+
 	struct Item {
 		String name;
 		Ref<Mesh> mesh;
@@ -54,6 +68,13 @@ public:
 		Ref<Texture> preview;
 		Transform navmesh_transform;
 		Ref<NavigationMesh> navmesh;
+		ColorFormat color_format;
+		CustomDataFormat custom_data_format;
+
+		Item() {
+			color_format = COLOR_NONE;
+			custom_data_format = CUSTOM_DATA_NONE;
+		}
 	};
 
 	Map<int, Item> item_map;
@@ -93,8 +114,16 @@ public:
 	Vector<int> get_item_list() const;
 	int get_last_unused_item_id() const;
 
+	void set_item_color_format(int p_item, ColorFormat p_color_format);
+	ColorFormat get_item_color_format(int p_item) const;
+	void set_item_custom_data_format(int p_item, CustomDataFormat p_custom_data_format);
+	CustomDataFormat get_item_custom_data_format(int p_item) const;
+
 	MeshLibrary();
 	~MeshLibrary();
 };
+
+VARIANT_ENUM_CAST(MeshLibrary::ColorFormat);
+VARIANT_ENUM_CAST(MeshLibrary::CustomDataFormat);
 
 #endif // CUBE_GRID_THEME_H

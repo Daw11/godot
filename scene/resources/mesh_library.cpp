@@ -50,10 +50,14 @@ bool MeshLibrary::_set(const StringName &p_name, const Variant &p_value) {
 			sd.shape = p_value;
 			shapes.push_back(sd);
 			set_item_shapes(idx, shapes);
-		} else if (what == "shapes") {
+		} else if (what == "shapes")
 			_set_item_shapes(idx, p_value);
-		} else if (what == "preview")
+		else if (what == "preview")
 			set_item_preview(idx, p_value);
+		else if (what == "color_format")
+			set_item_color_format(idx, static_cast<ColorFormat>((int)p_value));
+		else if (what == "custom_data_format")
+			set_item_custom_data_format(idx, static_cast<CustomDataFormat>((int)p_value));
 		else if (what == "navmesh")
 			set_item_navmesh(idx, p_value);
 		else if (what == "navmesh_transform")
@@ -80,6 +84,10 @@ bool MeshLibrary::_get(const StringName &p_name, Variant &r_ret) const {
 		r_ret = get_item_mesh(idx);
 	else if (what == "shapes")
 		r_ret = _get_item_shapes(idx);
+	else if (what == "color_format")
+		r_ret = get_item_color_format(idx);
+	else if (what == "custom_data_format")
+		r_ret = get_item_custom_data_format(idx);
 	else if (what == "navmesh")
 		r_ret = get_item_navmesh(idx);
 	else if (what == "navmesh_transform")
@@ -101,6 +109,8 @@ void MeshLibrary::_get_property_list(List<PropertyInfo> *p_list) const {
 		p_list->push_back(PropertyInfo(Variant::OBJECT, name + "mesh", PROPERTY_HINT_RESOURCE_TYPE, "Mesh"));
 		p_list->push_back(PropertyInfo(Variant::TRANSFORM, name + "mesh_transform"));
 		p_list->push_back(PropertyInfo(Variant::ARRAY, name + "shapes"));
+		p_list->push_back(PropertyInfo(Variant::INT, name + "color_format", PROPERTY_HINT_ENUM, "None,Byte,Float"));
+		p_list->push_back(PropertyInfo(Variant::INT, name + "custom_data_format", PROPERTY_HINT_ENUM, "None,Byte,Float"));
 		p_list->push_back(PropertyInfo(Variant::OBJECT, name + "navmesh", PROPERTY_HINT_RESOURCE_TYPE, "NavigationMesh"));
 		p_list->push_back(PropertyInfo(Variant::TRANSFORM, name + "navmesh_transform"));
 		p_list->push_back(PropertyInfo(Variant::OBJECT, name + "preview", PROPERTY_HINT_RESOURCE_TYPE, "Texture", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_EDITOR_HELPER));
@@ -286,15 +296,47 @@ Array MeshLibrary::_get_item_shapes(int p_item) const {
 	return ret;
 }
 
+void MeshLibrary::set_item_color_format(int p_item, ColorFormat p_color_format) {
+
+	ERR_FAIL_COND(!item_map.has(p_item));
+	item_map[p_item].color_format = p_color_format;
+	emit_changed();
+	_change_notify();
+}
+
+ MeshLibrary::ColorFormat MeshLibrary::get_item_color_format(int p_item) const {
+
+	ERR_FAIL_COND_V(!item_map.has(p_item), COLOR_NONE);
+	return item_map[p_item].color_format;
+}
+
+void MeshLibrary::set_item_custom_data_format(int p_item, CustomDataFormat p_custom_data_format) {
+
+	ERR_FAIL_COND(!item_map.has(p_item));
+	item_map[p_item].custom_data_format = p_custom_data_format;
+	emit_changed();
+	_change_notify();
+}
+
+MeshLibrary::CustomDataFormat MeshLibrary::get_item_custom_data_format(int p_item) const {
+
+	ERR_FAIL_COND_V(!item_map.has(p_item), CUSTOM_DATA_NONE);
+	return item_map[p_item].custom_data_format;
+}
+
 void MeshLibrary::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("create_item", "id"), &MeshLibrary::create_item);
+	ClassDB::bind_method(D_METHOD("set_item_color_format", "id", "format"), &MeshLibrary::set_item_color_format);
+	ClassDB::bind_method(D_METHOD("set_item_custom_data_format", "id", "format"), &MeshLibrary::set_item_custom_data_format);
 	ClassDB::bind_method(D_METHOD("set_item_name", "id", "name"), &MeshLibrary::set_item_name);
 	ClassDB::bind_method(D_METHOD("set_item_mesh", "id", "mesh"), &MeshLibrary::set_item_mesh);
 	ClassDB::bind_method(D_METHOD("set_item_navmesh", "id", "navmesh"), &MeshLibrary::set_item_navmesh);
 	ClassDB::bind_method(D_METHOD("set_item_navmesh_transform", "id", "navmesh"), &MeshLibrary::set_item_navmesh_transform);
 	ClassDB::bind_method(D_METHOD("set_item_shapes", "id", "shapes"), &MeshLibrary::_set_item_shapes);
 	ClassDB::bind_method(D_METHOD("set_item_preview", "id", "texture"), &MeshLibrary::set_item_preview);
+	ClassDB::bind_method(D_METHOD("get_item_color_format", "id"), &MeshLibrary::get_item_color_format);
+	ClassDB::bind_method(D_METHOD("get_item_custom_data_format", "id"), &MeshLibrary::get_item_custom_data_format);
 	ClassDB::bind_method(D_METHOD("get_item_name", "id"), &MeshLibrary::get_item_name);
 	ClassDB::bind_method(D_METHOD("get_item_mesh", "id"), &MeshLibrary::get_item_mesh);
 	ClassDB::bind_method(D_METHOD("get_item_navmesh", "id"), &MeshLibrary::get_item_navmesh);
@@ -307,6 +349,14 @@ void MeshLibrary::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("clear"), &MeshLibrary::clear);
 	ClassDB::bind_method(D_METHOD("get_item_list"), &MeshLibrary::get_item_list);
 	ClassDB::bind_method(D_METHOD("get_last_unused_item_id"), &MeshLibrary::get_last_unused_item_id);
+
+	BIND_ENUM_CONSTANT(COLOR_NONE);
+	BIND_ENUM_CONSTANT(COLOR_8BIT);
+	BIND_ENUM_CONSTANT(COLOR_FLOAT);
+
+	BIND_ENUM_CONSTANT(CUSTOM_DATA_NONE);
+	BIND_ENUM_CONSTANT(CUSTOM_DATA_8BIT);
+	BIND_ENUM_CONSTANT(CUSTOM_DATA_FLOAT);
 }
 
 MeshLibrary::MeshLibrary() {
