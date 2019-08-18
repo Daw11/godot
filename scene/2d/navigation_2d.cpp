@@ -32,6 +32,71 @@
 
 #define USE_ENTRY_POINT
 
+#include <valgrind/callgrind.h>
+#include <ctime>
+#include <iostream>
+
+_FORCE_INLINE_ bool Navigation2D::Polygon::contains(const Vector2 &p_point) const {
+
+	if (p_point.distance_squared_to(center) > radius) // The point can't be inside this polygon
+		return false;
+
+	for (int i = 2; i < points.size(); i++) { // All the polygons are convex
+
+		if (Geometry::is_point_in_triangle(p_point, points[0], points[i - 1], points[i]))
+			return true;
+	}
+
+	return false;
+}
+
+Vector2 Navigation2D::Polygon::get_closest_point(const Vector2 &p_point) const {
+
+	if (contains(p_point))
+		return p_point;
+
+	const int points_s = points.size();
+	float closest_d = Math_INF;
+	Vector2 p = Vector2();
+
+	for (int i = 0; i < points_s; i++) {
+
+		Edge s(points[i], points[(i + 1) % points_s]);
+		Vector2 closest_p = s.closest_point(p_point);
+		float d = closest_p.distance_squared_to(p_point);
+
+		if (d < closest_d) {
+
+			p = closest_p;
+			closest_d = d;
+		}
+	}
+
+	return p;
+}
+
+// Returns the edge that connects the two polygons
+Navigation2D::Edge Navigation2D::Polygon::get_connection_to(const Polygon *p_poly) const {
+
+	const int size1 = points.size();
+	const int size2 = p_poly->points.size();
+
+	for (int i = 0; i < size1; i++) {
+
+		Navigation2D::Edge e1 = Edge(points[i], points[(i + 1) % size1]);
+
+		for (int j = 0; j < size2; j++) {
+
+			Navigation2D::Edge e2 = Edge(p_poly->points[j], p_poly->points[(j + 1) % size2]);
+			if (e1 == e2)
+				return e1;
+		}
+	}
+
+	ERR_EXPLAIN("The polygon " + itos(id) + " isn't connected with polygon " + itos(p_poly->id));
+	ERR_FAIL_V(Navigation2D::Edge());
+}
+
 void Navigation2D::_navpoly_link(int p_id) {
 
 	ERR_FAIL_COND(!navpoly_map.has(p_id));
@@ -48,19 +113,20 @@ void Navigation2D::_navpoly_link(int p_id) {
 	for (int i = 0; i < nm.navpoly->get_polygon_count(); i++) {
 
 		//build
-
-		List<Polygon>::Element *P = nm.polygons.push_back(Polygon());
+		last_polygon_id++;
+		Map<int, Polygon>::Element *P = polygons.insert(last_polygon_id, Polygon());
 		Polygon &p = P->get();
+		p.id = last_polygon_id;
 		p.owner = &nm;
 
 		Vector<int> poly = nm.navpoly->get_polygon(i);
-		int plen = poly.size();
 		const int *indices = poly.ptr();
-		bool valid = true;
-		p.edges.resize(plen);
+		int plen = poly.size();
 
+		bool valid = true;
 		Vector2 center;
-		float sum = 0;
+
+		p.points.resize(plen);
 
 		for (int j = 0; j < plen; j++) {
 
@@ -70,66 +136,37 @@ void Navigation2D::_navpoly_link(int p_id) {
 				break;
 			}
 
-			Polygon::Edge e;
-			Vector2 ep = nm.xform.xform(r[idx]);
-			center += ep;
-			e.point = _get_point(ep);
-			p.edges.write[j] = e;
-
-			int idxn = indices[(j + 1) % plen];
-			if (idxn < 0 || idxn >= len) {
-				valid = false;
-				break;
-			}
-
-			Vector2 epn = nm.xform.xform(r[idxn]);
-
-			sum += (epn.x - ep.x) * (epn.y + ep.y);
+			Vector2 point = nm.xform.xform(r[idx]);
+			p.points.write[j] = point.floor();
+			center += point;
 		}
 
-		p.clockwise = sum > 0;
-
 		if (!valid) {
-			nm.polygons.pop_back();
+			polygons.erase(p.id);
 			ERR_CONTINUE(!valid);
 		}
 
 		p.center = center / plen;
+		nm.polygon_ids.push_back(p.id);
+
+		p.radius = 0; // Get the squared radius of the circle enclosing the polygon
+		for (int j = 0; j < plen; j++)
+			p.radius = MAX(p.radius, p.center.distance_squared_to(p.points[j]));
+
+		aStar->add_point(p.id, Vector3(p.center.x, p.center.y, 0));
 
 		//connect
-
 		for (int j = 0; j < plen; j++) {
 
-			int next = (j + 1) % plen;
-			EdgeKey ek(p.edges[j].point, p.edges[next].point);
+			EdgeKey ek(p.points[j], p.points[(j + 1) % plen]);
+			Map<EdgeKey, List<int> >::Element *C = connections.find(ek);
+			if (!C)
+				C = connections.insert(ek, List<int>());
 
-			Map<EdgeKey, Connection>::Element *C = connections.find(ek);
-			if (!C) {
+			for (List<int>::Element *I = C->get().front(); I; I = I->next())
+				aStar->connect_points(p.id, I->get());
 
-				Connection c;
-				c.A = &p;
-				c.A_edge = j;
-				c.B = NULL;
-				c.B_edge = -1;
-				connections[ek] = c;
-			} else {
-
-				if (C->get().B != NULL) {
-					ConnectionPending pending;
-					pending.polygon = &p;
-					pending.edge = j;
-					p.edges.write[j].P = C->get().pending.push_back(pending);
-					continue;
-				}
-
-				C->get().B = &p;
-				C->get().B_edge = j;
-				C->get().A->edges.write[C->get().A_edge].C = &p;
-				C->get().A->edges.write[C->get().A_edge].C_edge = j;
-				p.edges.write[j].C = C->get().A;
-				p.edges.write[j].C_edge = C->get().A_edge;
-				//connection successful.
-			}
+			C->get().push_back(p.id);
 		}
 	}
 
@@ -142,79 +179,46 @@ void Navigation2D::_navpoly_unlink(int p_id) {
 	NavMesh &nm = navpoly_map[p_id];
 	ERR_FAIL_COND(!nm.linked);
 
-	for (List<Polygon>::Element *E = nm.polygons.front(); E; E = E->next()) {
+	for (List<int>::Element *E = nm.polygon_ids.front(); E; E = E->next()) {
 
-		Polygon &p = E->get();
+		Polygon &p = polygons[E->get()];
 
-		int ec = p.edges.size();
-		Polygon::Edge *edges = p.edges.ptrw();
+		aStar->remove_point(p.id);
 
-		for (int i = 0; i < ec; i++) {
-			int next = (i + 1) % ec;
+		int points_s = p.points.size();
 
-			EdgeKey ek(edges[i].point, edges[next].point);
-			Map<EdgeKey, Connection>::Element *C = connections.find(ek);
-			ERR_CONTINUE(!C);
+		for (int i = 0; i < points_s; i++) {
 
-			if (edges[i].P) {
-				C->get().pending.erase(edges[i].P);
-				edges[i].P = NULL;
+			EdgeKey ek(p.points[i], p.points[(i + 1) % points_s]);
+			Map<EdgeKey, List<int> >::Element *C = connections.find(ek);
+			ERR_FAIL_COND(!C);
 
-			} else if (C->get().B) {
-				//disconnect
-
-				C->get().B->edges.write[C->get().B_edge].C = NULL;
-				C->get().B->edges.write[C->get().B_edge].C_edge = -1;
-				C->get().A->edges.write[C->get().A_edge].C = NULL;
-				C->get().A->edges.write[C->get().A_edge].C_edge = -1;
-
-				if (C->get().A == &E->get()) {
-
-					C->get().A = C->get().B;
-					C->get().A_edge = C->get().B_edge;
-				}
-				C->get().B = NULL;
-				C->get().B_edge = -1;
-
-				if (C->get().pending.size()) {
-					//reconnect if something is pending
-					ConnectionPending cp = C->get().pending.front()->get();
-					C->get().pending.pop_front();
-
-					C->get().B = cp.polygon;
-					C->get().B_edge = cp.edge;
-					C->get().A->edges.write[C->get().A_edge].C = cp.polygon;
-					C->get().A->edges.write[C->get().A_edge].C_edge = cp.edge;
-					cp.polygon->edges.write[cp.edge].C = C->get().A;
-					cp.polygon->edges.write[cp.edge].C_edge = C->get().A_edge;
-					cp.polygon->edges.write[cp.edge].P = NULL;
-				}
-
-			} else {
-				connections.erase(C);
-				//erase
-			}
+			C->get().erase(p.id);
 		}
+
+		polygons.erase(p.id);
 	}
 
-	nm.polygons.clear();
+	nm.polygon_ids.clear();
 
 	nm.linked = false;
 }
 
 int Navigation2D::navpoly_add(const Ref<NavigationPolygon> &p_mesh, const Transform2D &p_xform, Object *p_owner) {
 
-	int id = last_id++;
 	NavMesh nm;
 	nm.linked = false;
 	nm.navpoly = p_mesh;
 	nm.xform = p_xform;
 	nm.owner = p_owner;
-	navpoly_map[id] = nm;
 
-	_navpoly_link(id);
+	last_mesh_id++;
 
-	return id;
+	navpoly_map[last_mesh_id] = nm;
+
+	_navpoly_link(last_mesh_id);
+
+	return last_mesh_id;
 }
 
 void Navigation2D::navpoly_set_transform(int p_id, const Transform2D &p_xform) {
@@ -227,6 +231,7 @@ void Navigation2D::navpoly_set_transform(int p_id, const Transform2D &p_xform) {
 	nm.xform = p_xform;
 	_navpoly_link(p_id);
 }
+
 void Navigation2D::navpoly_remove(int p_id) {
 
 	ERR_FAIL_COND(!navpoly_map.has(p_id));
@@ -236,100 +241,22 @@ void Navigation2D::navpoly_remove(int p_id) {
 
 Vector<Vector2> Navigation2D::get_simple_path(const Vector2 &p_start, const Vector2 &p_end, bool p_optimize) {
 
-	Polygon *begin_poly = NULL;
-	Polygon *end_poly = NULL;
-	Vector2 begin_point;
-	Vector2 end_point;
-	float begin_d = 1e20;
-	float end_d = 1e20;
+	using namespace std;
+	clock_t begin = clock();
 
-	//look for point inside triangle
+	CALLGRIND_START_INSTRUMENTATION;
 
-	for (Map<int, NavMesh>::Element *E = navpoly_map.front(); E; E = E->next()) {
+	if (navpoly_map.size() == 0)
+		return Vector<Vector2>();
 
-		if (!E->get().linked)
-			continue;
-		for (List<Polygon>::Element *F = E->get().polygons.front(); F; F = F->next()) {
+	Vector2 begin_point = p_start;
+	Vector2 end_point = p_end;
 
-			Polygon &p = F->get();
-			if (begin_d || end_d) {
-				for (int i = 2; i < p.edges.size(); i++) {
+	Polygon *begin_poly = get_closest_polygon(begin_point);
+	Polygon *end_poly = get_closest_polygon(end_point);
 
-					if (begin_d > 0) {
-
-						if (Geometry::is_point_in_triangle(p_start, _get_vertex(p.edges[0].point), _get_vertex(p.edges[i - 1].point), _get_vertex(p.edges[i].point))) {
-
-							begin_poly = &p;
-							begin_point = p_start;
-							begin_d = 0;
-							if (end_d == 0)
-								break;
-						}
-					}
-
-					if (end_d > 0) {
-
-						if (Geometry::is_point_in_triangle(p_end, _get_vertex(p.edges[0].point), _get_vertex(p.edges[i - 1].point), _get_vertex(p.edges[i].point))) {
-
-							end_poly = &p;
-							end_point = p_end;
-							end_d = 0;
-							if (begin_d == 0)
-								break;
-						}
-					}
-				}
-			}
-
-			p.prev_edge = -1;
-		}
-	}
-
-	//start or end not inside triangle.. look for closest segment :|
-	if (begin_d || end_d) {
-		for (Map<int, NavMesh>::Element *E = navpoly_map.front(); E; E = E->next()) {
-
-			if (!E->get().linked)
-				continue;
-			for (List<Polygon>::Element *F = E->get().polygons.front(); F; F = F->next()) {
-
-				Polygon &p = F->get();
-				int es = p.edges.size();
-				for (int i = 0; i < es; i++) {
-
-					Vector2 edge[2] = {
-						_get_vertex(p.edges[i].point),
-						_get_vertex(p.edges[(i + 1) % es].point)
-					};
-
-					if (begin_d > 0) {
-						Vector2 spoint = Geometry::get_closest_point_to_segment_2d(p_start, edge);
-						float d = spoint.distance_to(p_start);
-						if (d < begin_d) {
-							begin_poly = &p;
-							begin_point = spoint;
-							begin_d = d;
-						}
-					}
-
-					if (end_d > 0) {
-						Vector2 spoint = Geometry::get_closest_point_to_segment_2d(p_end, edge);
-						float d = spoint.distance_to(p_end);
-						if (d < end_d) {
-							end_poly = &p;
-							end_point = spoint;
-							end_d = d;
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if (!begin_poly || !end_poly) {
-
-		return Vector<Vector2>(); //no path
-	}
+	begin_point = begin_poly->get_closest_point(begin_point);
+	end_point = end_poly->get_closest_point(end_point);
 
 	if (begin_poly == end_poly) {
 
@@ -340,383 +267,173 @@ Vector<Vector2> Navigation2D::get_simple_path(const Vector2 &p_start, const Vect
 		return path;
 	}
 
-	bool found_route = false;
+	PoolVector<int> idPath = aStar->get_id_path(begin_poly->id, end_poly->id);
+	const int idPathSize = idPath.size();
 
-	List<Polygon *> open_list;
+	if (idPathSize == 0)
+		return Vector<Vector2>(); // No path found
 
-	begin_poly->entry = p_start;
+	Vector<Vector2> path;
 
-	for (int i = 0; i < begin_poly->edges.size(); i++) {
+	if (p_optimize) {
+		//Simple Stupid Funnel Algorithm
 
-		if (begin_poly->edges[i].C) {
+		Polygon *curr_poly = begin_poly;
+		Polygon *next_poly;
 
-			begin_poly->edges[i].C->prev_edge = begin_poly->edges[i].C_edge;
-#ifdef USE_ENTRY_POINT
-			Vector2 edge[2] = {
-				_get_vertex(begin_poly->edges[i].point),
-				_get_vertex(begin_poly->edges[(i + 1) % begin_poly->edges.size()].point)
-			};
+		Vector<Edge> portals;
+		portals.resize(idPathSize + 1);
 
-			Vector2 entry = Geometry::get_closest_point_to_segment_2d(begin_poly->entry, edge);
-			begin_poly->edges[i].C->distance = begin_poly->entry.distance_to(entry);
-			begin_poly->edges[i].C->entry = entry;
-#else
-			begin_poly->edges[i].C->distance = begin_poly->center.distance_to(begin_poly->edges[i].C->center);
-#endif
-			open_list.push_back(begin_poly->edges[i].C);
+		portals.write[0] = Edge(begin_point, begin_point);
 
-			if (begin_poly->edges[i].C == end_poly) {
-				found_route = true;
-			}
+		for (int i = 1; i < idPathSize; i++) {
+			next_poly = &polygons[idPath[i]];
+			Edge portal = curr_poly->get_connection_to(next_poly);
+			Edge direction = Edge(curr_poly->center, portal.center());
+			portal.relative_to(direction);
+			portals.write[i] = portal;
+			curr_poly = next_poly;
 		}
-	}
 
-	while (!found_route) {
+		portals.write[idPathSize] = Edge(end_point, end_point);
 
-		if (open_list.size() == 0) {
-			break;
-		}
-		//check open list
+		int rightIndex = 0;
+		int leftIndex = 0;
 
-		List<Polygon *>::Element *least_cost_poly = NULL;
-		float least_cost = 1e30;
+		Vector2 apex = begin_point;
+		Edge funnel = portals[0];
 
-		//this could be faster (cache previous results)
-		for (List<Polygon *>::Element *E = open_list.front(); E; E = E->next()) {
+		path.push_back(begin_point);
 
-			Polygon *p = E->get();
+		for (int i = 1; i < portals.size(); i++) {
 
-			float cost = p->distance;
+			// Check right side
+			Edge rightSide = Edge(apex, portals[i].right);
 
-#ifdef USE_ENTRY_POINT
-			int es = p->edges.size();
+			if (rightSide.triarea2(funnel.right) <= 0) {
 
-			float shortest_distance = 1e30;
+				if (apex == funnel.right || rightSide.triarea2(funnel.left) > 0) { // Inside funnel
 
-			for (int i = 0; i < es; i++) {
-				Polygon::Edge &e = p->edges.write[i];
+					funnel.right = portals[i].right;
+					rightIndex = i;
+				} else { // Crossing
 
-				if (!e.C)
+					if (apex != funnel.left)
+						path.push_back(funnel.left);
+
+					apex = funnel.left;
+					funnel.right = apex;
+					i = leftIndex;
+					rightIndex = leftIndex;
 					continue;
-
-				Vector2 edge[2] = {
-					_get_vertex(p->edges[i].point),
-					_get_vertex(p->edges[(i + 1) % es].point)
-				};
-
-				Vector2 edge_point = Geometry::get_closest_point_to_segment_2d(p->entry, edge);
-				float dist = p->entry.distance_to(edge_point);
-				if (dist < shortest_distance)
-					shortest_distance = dist;
-			}
-
-			cost += shortest_distance;
-#else
-			cost += p->center.distance_to(end_point);
-#endif
-			if (cost < least_cost) {
-				least_cost_poly = E;
-				least_cost = cost;
-			}
-		}
-
-		Polygon *p = least_cost_poly->get();
-		//open the neighbours for search
-		int es = p->edges.size();
-
-		for (int i = 0; i < es; i++) {
-
-			Polygon::Edge &e = p->edges.write[i];
-
-			if (!e.C)
-				continue;
-
-#ifdef USE_ENTRY_POINT
-			Vector2 edge[2] = {
-				_get_vertex(p->edges[i].point),
-				_get_vertex(p->edges[(i + 1) % es].point)
-			};
-
-			Vector2 edge_entry = Geometry::get_closest_point_to_segment_2d(p->entry, edge);
-			float distance = p->entry.distance_to(edge_entry) + p->distance;
-
-#else
-
-			float distance = p->center.distance_to(e.C->center) + p->distance;
-
-#endif
-
-			if (e.C->prev_edge != -1) {
-				//oh this was visited already, can we win the cost?
-
-				if (e.C->distance > distance) {
-
-					e.C->prev_edge = e.C_edge;
-					e.C->distance = distance;
-#ifdef USE_ENTRY_POINT
-					e.C->entry = edge_entry;
-#endif
-				}
-			} else {
-				//add to open neighbours
-
-				e.C->prev_edge = e.C_edge;
-				e.C->distance = distance;
-#ifdef USE_ENTRY_POINT
-				e.C->entry = edge_entry;
-#endif
-
-				open_list.push_back(e.C);
-
-				if (e.C == end_poly) {
-					//oh my reached end! stop algorithm
-					found_route = true;
-					break;
 				}
 			}
-		}
 
-		if (found_route)
-			break;
+			// Check left side
+			Edge leftSide = Edge(apex, portals[i].left);
 
-		open_list.erase(least_cost_poly);
-	}
+			if (leftSide.triarea2(funnel.left) >= 0) {
 
-	if (found_route) {
+				if (apex == funnel.left || leftSide.triarea2(funnel.right) < 0) { // Inside funnel
 
-		Vector<Vector2> path;
-
-		if (p_optimize) {
-			//string pulling
-
-			Vector2 apex_point = end_point;
-			Vector2 portal_left = apex_point;
-			Vector2 portal_right = apex_point;
-			Polygon *left_poly = end_poly;
-			Polygon *right_poly = end_poly;
-			Polygon *p = end_poly;
-
-			while (p) {
-
-				Vector2 left;
-				Vector2 right;
-
-//#define CLOCK_TANGENT(m_a,m_b,m_c) ( ((m_a)-(m_c)).cross((m_a)-(m_b)) )
-#define CLOCK_TANGENT(m_a, m_b, m_c) ((((m_a).x - (m_c).x) * ((m_b).y - (m_c).y) - ((m_b).x - (m_c).x) * ((m_a).y - (m_c).y)))
-
-				if (p == begin_poly) {
-					left = begin_point;
-					right = begin_point;
+					funnel.left = portals[i].left;
+					leftIndex = i;
 				} else {
-					int prev = p->prev_edge;
-					int prev_n = (p->prev_edge + 1) % p->edges.size();
-					left = _get_vertex(p->edges[prev].point);
-					right = _get_vertex(p->edges[prev_n].point);
 
-					if (p->clockwise) {
-						SWAP(left, right);
-					}
-					/*if (CLOCK_TANGENT(apex_point,left,(left+right)*0.5) < 0){
-						SWAP(left,right);
-					}*/
+					if (apex != funnel.right)
+						path.push_back(funnel.right);
+
+					apex = funnel.right;
+					funnel.left = apex;
+					i = rightIndex;
+					leftIndex = rightIndex;
+					continue;
 				}
-
-				bool skip = false;
-
-				/*
-				print_line("-----\nAPEX: "+(apex_point-end_point));
-				print_line("LEFT:");
-				print_line("\tPortal: "+(portal_left-end_point));
-				print_line("\tPoint: "+(left-end_point));
-				print_line("\tLeft Tangent: "+rtos(CLOCK_TANGENT(apex_point,portal_left,left)));
-				print_line("\tLeft Distance: "+rtos(portal_left.distance_squared_to(apex_point)));
-				print_line("\tLeft Test: "+rtos(CLOCK_TANGENT(apex_point,left,portal_right)));
-				print_line("RIGHT:");
-				print_line("\tPortal: "+(portal_right-end_point));
-				print_line("\tPoint: "+(right-end_point));
-				print_line("\tRight Tangent: "+rtos(CLOCK_TANGENT(apex_point,portal_right,right)));
-				print_line("\tRight Distance: "+rtos(portal_right.distance_squared_to(apex_point)));
-				print_line("\tRight Test: "+rtos(CLOCK_TANGENT(apex_point,right,portal_left)));
-				*/
-
-				if (CLOCK_TANGENT(apex_point, portal_left, left) >= 0) {
-					//process
-					if (Math::is_zero_approx(portal_left.distance_squared_to(apex_point)) || CLOCK_TANGENT(apex_point, left, portal_right) > 0) {
-						left_poly = p;
-						portal_left = left;
-					} else {
-
-						apex_point = portal_right;
-						p = right_poly;
-						left_poly = p;
-						portal_left = apex_point;
-						portal_right = apex_point;
-						if (!path.size() || !Math::is_zero_approx(path[path.size() - 1].distance_to(apex_point)))
-							path.push_back(apex_point);
-						skip = true;
-					}
-				}
-
-				if (!skip && CLOCK_TANGENT(apex_point, portal_right, right) <= 0) {
-					//process
-					if (Math::is_zero_approx(portal_right.distance_squared_to(apex_point)) || CLOCK_TANGENT(apex_point, right, portal_left) < 0) {
-						right_poly = p;
-						portal_right = right;
-					} else {
-
-						apex_point = portal_left;
-						p = left_poly;
-						right_poly = p;
-						portal_right = apex_point;
-						portal_left = apex_point;
-						if (!path.size() || !Math::is_zero_approx(path[path.size() - 1].distance_to(apex_point)))
-							path.push_back(apex_point);
-					}
-				}
-
-				if (p != begin_poly)
-					p = p->edges[p->prev_edge].C;
-				else
-					p = NULL;
-			}
-
-		} else {
-			//midpoints
-			Polygon *p = end_poly;
-
-			while (true) {
-				int prev = p->prev_edge;
-				int prev_n = (p->prev_edge + 1) % p->edges.size();
-				Vector2 point = (_get_vertex(p->edges[prev].point) + _get_vertex(p->edges[prev_n].point)) * 0.5;
-				path.push_back(point);
-				p = p->edges[prev].C;
-				if (p == begin_poly)
-					break;
 			}
 		}
 
-		if (!path.size() || !Math::is_zero_approx(path[path.size() - 1].distance_squared_to(begin_point))) {
-			path.push_back(begin_point); // Add the begin point
-		} else {
-			path.write[path.size() - 1] = begin_point; // Replace first midpoint by the exact begin point
+		if (apex != end_point)
+			path.push_back(end_point);
+
+	} else {
+		//Use the midpoints of the polygons connections
+
+		path.resize(idPathSize + 1);
+
+		path.write[0] = begin_point;
+
+		Polygon *current_p = begin_poly;
+
+		for (int i = 1; i < idPathSize; i++) {
+			Polygon *next_p = &polygons[idPath[i]];
+
+			Edge portal = current_p->get_connection_to(next_p);
+			path.write[i] = portal.center();
+
+			current_p = next_p;
 		}
 
-		path.invert();
-
-		if (path.size() <= 1 || !Math::is_zero_approx(path[path.size() - 1].distance_squared_to(end_point))) {
-			path.push_back(end_point); // Add the end point
-		} else {
-			path.write[path.size() - 1] = end_point; // Replace last midpoint by the exact end point
-		}
-
-		return path;
+		path.write[idPathSize] = end_point;
 	}
 
-	return Vector<Vector2>();
+	CALLGRIND_STOP_INSTRUMENTATION;
+
+	clock_t end = clock();
+	double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
+
+	std::cout << "Time: " << elapsed_secs << '\n';
+	std::cout << "Path size: " << path.size() << '\n';
+
+	return path;
 }
 
-Vector2 Navigation2D::get_closest_point(const Vector2 &p_point) {
+Navigation2D::Polygon *Navigation2D::get_closest_polygon(const Vector2 &p_point) const {
 
-	Vector2 closest_point = Vector2();
-	float closest_point_d = 1e20;
+	for (Map<int, Polygon>::Element *P = polygons.front(); P; P = P->next()) {
 
-	for (Map<int, NavMesh>::Element *E = navpoly_map.front(); E; E = E->next()) {
+		Polygon &p = P->get();
 
-		if (!E->get().linked)
-			continue;
-		for (List<Polygon>::Element *F = E->get().polygons.front(); F; F = F->next()) {
+		if (p.contains(p_point))
+			return &p;
+	}
 
-			Polygon &p = F->get();
-			for (int i = 2; i < p.edges.size(); i++) {
+	Polygon *closest_poly = NULL;
+	float min_d = Math_INF;
 
-				if (Geometry::is_point_in_triangle(p_point, _get_vertex(p.edges[0].point), _get_vertex(p.edges[i - 1].point), _get_vertex(p.edges[i].point))) {
+	for (Map<int, Polygon>::Element *P = polygons.front(); P; P = P->next()) {
 
-					return p_point; //inside triangle, nothing else to discuss
-				}
+		Polygon &p = P->get();
+		int points_s = p.points.size();
+
+		for (int i = 0; i < points_s; i++) {
+
+			Edge s(p.points[i], p.points[(i + 1) % points_s]);
+			Vector2 closest_point = s.closest_point(p_point);
+			float d = closest_point.distance_squared_to(p_point);
+
+			if (d < min_d) {
+
+				closest_poly = &p;
+				min_d = d;
 			}
 		}
 	}
 
-	for (Map<int, NavMesh>::Element *E = navpoly_map.front(); E; E = E->next()) {
-
-		if (!E->get().linked)
-			continue;
-		for (List<Polygon>::Element *F = E->get().polygons.front(); F; F = F->next()) {
-
-			Polygon &p = F->get();
-			int es = p.edges.size();
-			for (int i = 0; i < es; i++) {
-
-				Vector2 edge[2] = {
-					_get_vertex(p.edges[i].point),
-					_get_vertex(p.edges[(i + 1) % es].point)
-				};
-
-				Vector2 spoint = Geometry::get_closest_point_to_segment_2d(p_point, edge);
-				float d = spoint.distance_squared_to(p_point);
-				if (d < closest_point_d) {
-
-					closest_point = spoint;
-					closest_point_d = d;
-				}
-			}
-		}
-	}
-
-	return closest_point;
+	return closest_poly;
 }
 
-Object *Navigation2D::get_closest_point_owner(const Vector2 &p_point) {
+Vector2 Navigation2D::get_closest_point(const Vector2 &p_point) const {
 
-	Object *owner = NULL;
-	Vector2 closest_point = Vector2();
-	float closest_point_d = 1e20;
+	Polygon *p = get_closest_polygon(p_point);
+	return p->get_closest_point(p_point);
+}
 
-	for (Map<int, NavMesh>::Element *E = navpoly_map.front(); E; E = E->next()) {
+Object *Navigation2D::get_closest_point_owner(const Vector2 &p_point) const {
 
-		if (!E->get().linked)
-			continue;
-		for (List<Polygon>::Element *F = E->get().polygons.front(); F; F = F->next()) {
+	Polygon *p = get_closest_polygon(p_point);
+	NavMesh *nm = p->owner;
 
-			Polygon &p = F->get();
-			for (int i = 2; i < p.edges.size(); i++) {
-
-				if (Geometry::is_point_in_triangle(p_point, _get_vertex(p.edges[0].point), _get_vertex(p.edges[i - 1].point), _get_vertex(p.edges[i].point))) {
-
-					return E->get().owner;
-				}
-			}
-		}
-	}
-
-	for (Map<int, NavMesh>::Element *E = navpoly_map.front(); E; E = E->next()) {
-
-		if (!E->get().linked)
-			continue;
-		for (List<Polygon>::Element *F = E->get().polygons.front(); F; F = F->next()) {
-
-			Polygon &p = F->get();
-			int es = p.edges.size();
-			for (int i = 0; i < es; i++) {
-
-				Vector2 edge[2] = {
-					_get_vertex(p.edges[i].point),
-					_get_vertex(p.edges[(i + 1) % es].point)
-				};
-
-				Vector2 spoint = Geometry::get_closest_point_to_segment_2d(p_point, edge);
-				float d = spoint.distance_squared_to(p_point);
-				if (d < closest_point_d) {
-
-					closest_point = spoint;
-					closest_point_d = d;
-					owner = E->get().owner;
-				}
-			}
-		}
-	}
-
-	return owner;
+	return nm->owner;
 }
 
 void Navigation2D::_bind_methods() {
@@ -732,7 +449,12 @@ void Navigation2D::_bind_methods() {
 
 Navigation2D::Navigation2D() {
 
-	ERR_FAIL_COND(sizeof(Point) != 8);
-	cell_size = 1; // one pixel
-	last_id = 1;
+	last_mesh_id = 0;
+	last_polygon_id = 0;
+	aStar = memnew(AStar);
+}
+
+Navigation2D::~Navigation2D() {
+
+	memdelete(aStar);
 }

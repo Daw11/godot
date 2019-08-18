@@ -31,6 +31,7 @@
 #ifndef NAVIGATION_H
 #define NAVIGATION_H
 
+#include "core/math/a_star.h"
 #include "scene/3d/navigation_mesh.h"
 #include "scene/3d/spatial.h"
 
@@ -38,89 +39,46 @@ class Navigation : public Spatial {
 
 	GDCLASS(Navigation, Spatial);
 
-	union Point {
+	struct Edge {
 
-		struct {
-			int64_t x : 21;
-			int64_t y : 22;
-			int64_t z : 21;
-		};
+		Vector3 left;
+		Vector3 right;
 
-		uint64_t key;
-		bool operator<(const Point &p_key) const { return key < p_key.key; }
-	};
+		_FORCE_INLINE_ Edge() {}
 
-	struct EdgeKey {
+		_FORCE_INLINE_ Edge(const Vector3 &p_left, const Vector3 &p_right) :
+				left(p_left), right(p_right) {}
 
-		Point a;
-		Point b;
+		_FORCE_INLINE_ Vector3 center() const { return (left + right) * 0.5; }
 
-		bool operator<(const EdgeKey &p_key) const {
-			return (a.key == p_key.a.key) ? (b.key < p_key.b.key) : (a.key < p_key.a.key);
-		};
+		_FORCE_INLINE_ bool operator==(const Edge &p_s) const {
+			return (left == p_s.left && right == p_s.right) || (left == p_s.right && right == p_s.left);
+		}
 
-		EdgeKey(const Point &p_a = Point(), const Point &p_b = Point()) :
-				a(p_a),
-				b(p_b) {
-			if (a.key > b.key) {
-				SWAP(a, b);
-			}
+		_FORCE_INLINE_ float triarea2(const Vector3 &p_point, const Vector3 &p_up) const {
+			// If < 0 then the point is to the right, if > 0 the point is to the left, if equal to 0 the point is on the edge
+			return ((p_point - left ).cross(p_point - right)).dot(p_up);
+		}
+
+		_FORCE_INLINE_ void relative_to(const Edge &p_s, const Vector3 &p_up) { // p_s must cross the edge
+			if (p_s.triarea2(left, p_up) < 0)
+				SWAP(left, right);
 		}
 	};
 
-	struct NavMesh;
-	struct Polygon;
+	struct EdgeKey : public Edge { // Unique key for each possible edge
 
-	struct ConnectionPending {
-
-		Polygon *polygon;
-		int edge;
-	};
-
-	struct Polygon {
-
-		struct Edge {
-			Point point;
-			Polygon *C; //connection
-			int C_edge;
-			List<ConnectionPending>::Element *P;
-			Edge() {
-				C = NULL;
-				C_edge = -1;
-				P = NULL;
-			}
+		_FORCE_INLINE_ bool operator<(const EdgeKey &p_eKey) const { // Used by the binary search tree of Map
+			return (left == p_eKey.left) ? (right < p_eKey.right) : (left < p_eKey.left);
 		};
 
-		Vector<Edge> edges;
+		_FORCE_INLINE_ EdgeKey() {}
 
-		Vector3 center;
-		Vector3 entry;
-
-		float distance;
-		int prev_edge;
-		bool clockwise;
-
-		NavMesh *owner;
-	};
-
-	struct Connection {
-
-		Polygon *A;
-		int A_edge;
-		Polygon *B;
-		int B_edge;
-
-		List<ConnectionPending> pending;
-
-		Connection() {
-			A = NULL;
-			B = NULL;
-			A_edge = -1;
-			B_edge = -1;
+		_FORCE_INLINE_ EdgeKey(const Vector3 &p_left, const Vector3 &p_right) : Edge(p_left, p_right) {
+			if (right < left) // left is always less than right
+				SWAP(left, right);
 		}
 	};
-
-	Map<EdgeKey, Connection> connections;
 
 	struct NavMesh {
 
@@ -128,37 +86,38 @@ class Navigation : public Spatial {
 		Transform xform;
 		bool linked;
 		Ref<NavigationMesh> navmesh;
-		List<Polygon> polygons;
+		List<int> polygon_ids;
 	};
 
-	_FORCE_INLINE_ Point _get_point(const Vector3 &p_pos) const {
+	struct Polygon {
 
-		int x = int(Math::floor(p_pos.x / cell_size));
-		int y = int(Math::floor(p_pos.y / cell_size));
-		int z = int(Math::floor(p_pos.z / cell_size));
+		Vector<Vector3> points;
 
-		Point p;
-		p.key = 0;
-		p.x = x;
-		p.y = y;
-		p.z = z;
-		return p;
-	}
+		int id;
+		Vector3 center;
+		NavMesh *owner;
 
-	_FORCE_INLINE_ Vector3 _get_vertex(const Point &p_point) const {
+		Vector3 get_closest_point(const Vector3 &p_point) const;
+		Edge get_connection_to(const Polygon *p_poly) const;
+	};
 
-		return Vector3(p_point.x, p_point.y, p_point.z) * cell_size;
-	}
+	Map<EdgeKey, List<int> > connections;
+	Map<int, Polygon> polygons;
+
+	AStar *aStar;
 
 	void _navmesh_link(int p_id);
 	void _navmesh_unlink(int p_id);
 
-	float cell_size;
 	Map<int, NavMesh> navmesh_map;
-	int last_id;
 
 	Vector3 up;
-	void _clip_path(Vector<Vector3> &path, Polygon *from_poly, const Vector3 &p_to_point, Polygon *p_to_poly);
+
+	int last_mesh_id;
+	int last_polygon_id;
+
+	void _clip_path(Vector<Vector3> &r_path, Vector3 &p_from, const Vector3 &p_to, const Vector<Edge> &portals, int &p_from_index, const int p_to_index);
+	Navigation::Polygon *_get_closest_polygon(const Vector3 &p_point) const;
 
 protected:
 	static void _bind_methods();
@@ -179,6 +138,7 @@ public:
 	Object *get_closest_point_owner(const Vector3 &p_point);
 
 	Navigation();
+	~Navigation();
 };
 
 #endif // NAVIGATION_H
