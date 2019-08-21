@@ -4982,6 +4982,8 @@ void SpatialEditor::_update_gizmos_menu_theme() {
 	}
 }
 
+#include <iostream>
+
 void SpatialEditor::_init_grid() {
 
 	PoolVector<Color> grid_colors[3];
@@ -4993,6 +4995,7 @@ void SpatialEditor::_init_grid() {
 	int primary_grid_steps = EditorSettings::get_singleton()->get("editors/3d/primary_grid_steps");
 
 	for (int i = 0; i < 3; i++) {
+
 		Vector3 axis;
 		axis[i] = 1;
 		Vector3 axis_n1;
@@ -5001,19 +5004,18 @@ void SpatialEditor::_init_grid() {
 		axis_n2[(i + 2) % 3] = 1;
 
 		for (int j = -grid_size; j <= grid_size; j++) {
+
+			// Don't draw the center lines of the grid if the origin is enabled
+			// The origin would overlap the grid lines in this case, causing flickering
+			if (origin_enabled && j == 0)
+				continue;
+
 			Vector3 p1 = axis_n1 * j + axis_n2 * -grid_size;
 			Vector3 p1_dest = p1 * (-axis_n2 + axis_n1);
 			Vector3 p2 = axis_n2 * j + axis_n1 * -grid_size;
 			Vector3 p2_dest = p2 * (-axis_n1 + axis_n2);
 
-			Color line_color = secondary_grid_color;
-			if (origin_enabled && j == 0) {
-				// Don't draw the center lines of the grid if the origin is enabled
-				// The origin would overlap the grid lines in this case, causing flickering
-				continue;
-			} else if (j % primary_grid_steps == 0) {
-				line_color = primary_grid_color;
-			}
+			Color line_color = j % primary_grid_steps == 0 ? primary_grid_color : secondary_grid_color;
 
 			grid_points[i].push_back(p1);
 			grid_points[i].push_back(p1_dest);

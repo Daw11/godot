@@ -1,0 +1,31 @@
+shader_type spatial;
+render_mode cull_disabled, unshaded;
+
+uniform vec4 primary_grid_color : hint_color;
+uniform vec4 secondary_grid_color : hint_color;
+uniform float primary_grid_steps = 10.0;
+
+varying vec3 world_pos;
+varying vec3 camera_pos;
+
+void vertex() {
+	world_pos = (WORLD_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	camera_pos = (CAMERA_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+}
+
+float get_grid(in vec2 coord, in float size) {
+	coord /= size;
+	vec2 grid = abs(fract(coord - 0.5) - 0.5) / fwidth(coord);
+	return  min(min(grid.x, grid.y), 1.0);
+}
+
+void fragment() {
+	float primary_grid = get_grid(world_pos.xz, primary_grid_steps);
+	float secondary_grid = get_grid(world_pos.xz, 1.0);
+
+	ALBEDO = mix(primary_grid_color.rgb, secondary_grid_color.rgb, pow(primary_grid, 2.0));
+
+	float dist = distance(camera_pos, world_pos);
+	float attenuation = 1.0 / (1.0 + 0.01 * dist + 0.0002 * (dist * dist));
+	ALPHA = (1.0 - secondary_grid) * attenuation;
+}
