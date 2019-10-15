@@ -31,6 +31,7 @@
 #include "animated_image.h"
 
 LoadAnimatedImageFunction AnimatedImage::_load_gif = NULL;
+LoadAnimatedImageFunction AnimatedImage::_load_apng = NULL;
 
 Error AnimatedImage::load_from_file(const String &p_path, int max_frames) {
 
@@ -40,6 +41,10 @@ Error AnimatedImage::load_from_file(const String &p_path, int max_frames) {
 
 		Ref<AnimatedImage> animated_image = Ref<AnimatedImage>(this);
 		return _load_gif(animated_image, p_path, max_frames);
+	} else if (ext == "apng") {
+
+		Ref<AnimatedImage> animated_image = Ref<AnimatedImage>(this);
+		return _load_apng(animated_image, p_path, max_frames);
 	} else {
 
 		ERR_PRINTS("Unrecognized image: " + p_path);
@@ -54,6 +59,10 @@ Error AnimatedImage::load_from_buffer(const PoolByteArray &p_data, int max_frame
 
 		Ref<AnimatedImage> animated_image = Ref<AnimatedImage>(this);
 		return _load_gif(animated_image, p_data, max_frames);
+	} else if (p_data[1] == 'P') {
+
+		Ref<AnimatedImage> animated_image = Ref<AnimatedImage>(this);
+		return _load_apng(animated_image, p_data, max_frames);
 	} else {
 
 		ERR_PRINTS("Unrecognized image.");

@@ -1,5 +1,5 @@
 /*************************************************************************/
-/*  animated_image.h                                                     */
+/*  apng.h                                                               */
 /*************************************************************************/
 /*                       This file is part of:                           */
 /*                           GODOT ENGINE                                */
@@ -28,66 +28,82 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                */
 /*************************************************************************/
 
-#ifndef ANIMATED_IMAGE_H
-#define ANIMATED_IMAGE_H
+#ifndef APNG_H
+#define APNG_H
 
-#include "core/image.h"
-#include "scene/2d/animated_sprite.h"
+#include "core/io/animated_image_loader.h"
 
-class AnimatedImage;
+class Apng {
 
-typedef Error (*LoadAnimatedImageFunction)(Ref<AnimatedImage> &r_animated_image, const Variant &source, int max_frames);
+	void *source;
+	uint32_t (*read_func)(void *source, PoolByteArray &data, int length);
+	PoolByteArray data;
 
-class AnimatedImage : public Reference {
-	GDCLASS(AnimatedImage, Reference);
+	Error get(uint32_t p_length);
+	Error get_8(uint8_t *result);
+	Error get_16(uint16_t *result);
+	Error get_32(uint32_t *result);
 
-	struct Frame {
+	PoolByteArray ihdr_shared; // This part of the IHDR is the same in all the frames.
+	PoolByteArray shared_chunks;
 
-		Ref<Image> image;
-		float delay;
+	uint32_t width;
+	uint32_t height;
+
+	uint8_t *screen;
+	uint32_t screen_size;
+
+	int last_undisposed_frame;
+
+	struct Chunk {
+
+		uint32_t size;
+		uint32_t type;
 	};
-	Vector<Frame> frames;
 
-protected:
-	static void _bind_methods();
+	Error _get_chunk(Chunk &p_chunk);
+	Error _skip_chunk(const Chunk &p_chunk);
+
+	struct FrameControlChunk {
+
+		uint32_t sequence_number;
+		uint32_t width;
+		uint32_t height;
+		uint32_t x_offset;
+		uint32_t y_offset;
+		uint16_t delay_num;
+		uint16_t delay_den;
+		uint8_t dispose_op;
+		uint8_t blend_op;
+	};
+
+	Error _get_fcTL(FrameControlChunk &fcTL);
+
+	PoolByteArray _get_crc(const PoolByteArray &p_data, int p_begin);
+	PoolByteArray _create_frame(const PoolByteArray &p_data, FrameControlChunk &fcTL);
+	Error _add_frame(Ref<AnimatedImage> &r_animated_image, PoolByteArray &p_data, FrameControlChunk &fcTL);
+
+	Error _open(void *p_source, AnimatedImage::SourceType source_type);
+	Error _load_frames(Ref<AnimatedImage> &r_animated_image, int max_frames = 0);
+	Error _close();
+
+	void _clear();
 
 public:
-	enum SourceFormat {
-		GIF,
-		APNG
-	};
+	Error load_from_file_access(Ref<AnimatedImage> &r_animated_image, FileAccess *f, int max_frames = 0);
+	Error load_from_buffer(Ref<AnimatedImage> &r_animated_image, const PoolByteArray &p_data, int max_frames = 0);
 
-	enum ImportType {
-		ANIMATED_TEXTURE,
-		SPRITE_FRAMES
-	};
-
-	enum SourceType {
-		FILE,
-		BUFFER
-	};
-
-	static LoadAnimatedImageFunction _load_gif;
-	static LoadAnimatedImageFunction _load_apng;
-
-	Error load_from_file(const String &p_path, int max_frames = 0);
-	Error load_from_buffer(const PoolByteArray &p_data, int max_frames = 0);
-
-	Ref<AnimatedTexture> to_animated_texture(uint32_t p_flags = 0, int max_frames = 0) const;
-	Ref<SpriteFrames> to_sprite_frames(uint32_t p_flags = 0, int max_frames = 0) const;
-
-	void add_frame(const Ref<Image> &p_image, float p_delay, int p_idx = -1);
-	void remove_frame(int p_idx);
-
-	void set_image(int p_idx, const Ref<Image> &p_image);
-	Ref<Image> get_image(int p_idx) const;
-
-	void set_delay(int p_idx, float p_delay);
-	float get_delay(int p_idx) const;
-
-	int get_frames() const;
-
-	void clear();
+	Apng();
 };
 
-#endif // ANIMATED_IMAGE_H
+class AnimatedImageLoaderAPNG : public AnimatedImageFormatLoader {
+
+public:
+	virtual Error load_animated_image(Ref<AnimatedImage> &r_animated_image, FileAccess *f, int max_frames = 0) const;
+	virtual void get_recognized_extensions(List<String> *p_extensions) const;
+	virtual bool recognize_format(AnimatedImage::SourceFormat p_format) const;
+
+	AnimatedImageLoaderAPNG();
+};
+
+#endif // APNG_H

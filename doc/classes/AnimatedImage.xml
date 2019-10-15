@@ -4,7 +4,7 @@
 		Loads and converts animated images.
 	</brief_description>
 	<description>
-		[AnimatedImage] can load the frames of a GIF and store each of them as an [Image] and a delay. The data can then be used to generate an [AnimatedTexture] or a [SpriteFrames]. The params [code]max_frames[/code] of some methods can limit the number of generated frames.
+		[AnimatedImage] can load the frames from GIFs or APNGs and store each of them as an [Image] and a delay. The data can then be used to generate an [AnimatedTexture] or a [SpriteFrames]. The params [code]max_frames[/code] of some methods can limit the number of generated frames.
 	</description>
 	<tutorials>
 	</tutorials>

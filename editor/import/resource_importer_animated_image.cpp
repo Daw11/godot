@@ -36,6 +36,7 @@
 void ResourceImporterAnimatedImage::get_recognized_extensions(List<String> *p_extensions) const {
 
 	p_extensions->push_back("gif");
+	p_extensions->push_back("apng");
 }
 
 String ResourceImporterAnimatedImage::get_save_extension() const {
@@ -104,9 +105,16 @@ Error ResourceImporterAnimatedImage::import_animated_image(AnimatedImage::Import
 	f = FileAccess::open(p_save_path + ".aimg", FileAccess::WRITE);
 	ERR_FAIL_COND_V(!f, ERR_CANT_OPEN);
 
+	String ext = p_source_file.get_extension().to_lower();
+
 	const uint8_t header[6] = { 'G', 'D', 'A', 'I', 'M', 'G' };
 	f->store_buffer(header, 6);
-	f->store_8(AnimatedImage::GIF); // The only supported format right now.
+
+	if (ext == "gif")
+		f->store_8(AnimatedImage::GIF);
+	else
+		f->store_8(AnimatedImage::APNG);
+
 	f->store_8(type);
 	f->store_32(tex_flags);
 	f->store_32(max_frames);
